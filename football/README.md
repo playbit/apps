@@ -4,13 +4,13 @@ Play a three-minute game of seven-a-side football at North Quay. Portside FC
 wear coral and attack the goal on the right. Rovers wear blue and attack the
 goal on the left. Look for the ring under the player you control.
 
-<img src="screenshot.png" width="560" height="480">
+<img src="screenshot.png" width="560" height="420" alt="A match at North Quay in the Football window">
 
 ## Kick off
 
-Follow the [Playbit setup instructions](../README.md), then run `pb run` from
-the `football` directory. You can play solo with computer-controlled teammates
-and opponents.
+Install Playbit 0.1.3 or later using the [setup instructions](../README.md),
+then run `pb run` from the `football` directory. You can play solo with
+computer-controlled teammates and opponents.
 
 To play with friends, click **Copy Session Link** in the top right of the game
 window and send them the link to open in Playbit. Up to 14 people can play.

@@ -29,7 +29,7 @@ type t = {
 }
 
 let create () = {
-  surface = { width = 720; height = 545; pixel_scale = 1.; inputs = 3 };
+  surface = { width = Art.width; height = Art.height; pixel_scale = 1.; inputs = 3 };
   layout = None;
   join_notice = None;
   positions = Array.make Match.player_count (0., 0.);
@@ -70,14 +70,12 @@ let hit_test screen ~x ~y =
       match view.action with
       | Some (bounds, action) when Pixel_layout.contains bounds x y ->
           (match action with Play -> Hint | Rematch -> Result)
-      | _ ->
-          match view.stadium with
-          | Some fit when Pixel_layout.contains fit.box x y ->
-              let x, y = Pixel_layout.to_source fit x y in
-              let x, y = Art.unproject ~x ~y in
-              if x >= 0. && x <= Match.width && y >= 0. && y <= Match.height
-              then Pitch (x, y) else Outside
-          | _ -> Outside
+      | _ when Pixel_layout.contains view.stadium x y ->
+          let x, y = Pixel_layout.to_source view.stadium ~w:Art.width ~h:Art.height x y in
+          let x, y = Art.unproject ~x ~y in
+          if x >= 0. && x <= Match.width && y >= 0. && y <= Match.height
+          then Pitch (x, y) else Outside
+      | _ -> Outside
 
 let shirts = [| 1; 2; 3; 7; 8; 11; 9 |]
 let club = function Match.Home -> "Portside FC" | Match.Away -> "Rovers"
@@ -200,9 +198,13 @@ let render screen room ~notice =
     let seconds = (game.ticks_left + Match.ticks_per_second - 1) / Match.ticks_per_second in
     Match_view.draw_scorebug ~home_score:game.home_score ~away_score:game.away_score ~seconds in
   let scene = View.create () in
+  View.theme scene [Playbit.ThemeColor.window_background, Match_view.background];
+  View.window_style scene Playbit.WindowStyle.(standard lor transparent_titlebar lor theme_dark);
+  View.window_size_constraints ~aspect_ratio:Match_view.aspect_ratio scene;
   let canvas () =
-    View.viewport_canvas scene Target.canvas ~width:view.width ~height:view.height
-      ~continuous:true (Match_view.draw view ~pitch:(pitch screen room game) ~board) in
+    View.canvas_with_options ~extent:View.Window ~clear_color:Match_view.background
+      scene Target.canvas ~width:view.width ~height:view.height ~continuous:true
+      (Match_view.draw view ~pitch:(pitch screen room game) ~board) in
   (match menu status action with
    | [] -> canvas ()
    | items -> View.context_menu scene items canvas);

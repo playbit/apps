@@ -13,12 +13,22 @@ type full_time = { home_score : int; away_score : int; replay : replay }
 type t = {
   width : int;
   height : int;
-  stadium : fit option;
+  stadium : box;
   scorebug : fit option;
-  labels : Playbit.View.item list;
-  result : Playbit.View.item option;
+  overlays : Playbit.View.item list;
   action : (box * action) option;
 }
+
+let background = 0x1c3330ffl
+let aspect_ratio = float Art.width /. float Art.height
+
+(* Fullscreen and live resize can briefly supply a surface of a different shape. *)
+let stadium_bounds width height =
+  let w = max 1 (min width (Art.nearest (float height *. aspect_ratio))) in
+  let h = max 1 (min height (Art.nearest (float width /. aspect_ratio))) in
+  (* Native window sizes round to whole points. Fill the last point at either edge. *)
+  if width - w <= 1 && height - h <= 1 then { x = 0; y = 0; w = width; h = height }
+  else { x = (width - w) / 2; y = (height - h) / 2; w; h }
 
 let item fit image =
   let b = fit.box in
@@ -40,10 +50,12 @@ let text image ~x ~y ~scale color label =
     paint image ~x:(x + col * scale) ~y:(y + row * scale) ~w:scale ~h:scale color
   ) ~x:0 ~y:0 label
 
-let lettering label =
-  let w = Pixel_font.measure label and h = Pixel_font.height in
+let lettering ~backed label =
+  let pad = if backed then 4 else 0 in
+  let w = Pixel_font.measure label + 2 * pad and h = Pixel_font.height in
   let image = blank ~w ~h in
-  text image ~x:0 ~y:0 ~scale:1 0xffeac3ffl label;
+  if backed then paint image ~x:0 ~y:0 ~w ~h background;
+  text image ~x:pad ~y:0 ~scale:1 0xffeac3ffl label;
   image
 
 let scorebug_width = 168
@@ -128,16 +140,14 @@ let result_panel full_time =
   text image ~x:prompt_x ~y:38 ~scale:1 0xdce6cbffl prompt;
   image
 
-let result_layer ~density ~font_zoom (pitch : fit) full_time =
+let result_layer ~density ~max_zoom (b : box) full_time =
   let image = result_panel full_time in
-  let b = pitch.box in
   let inset = min 8 (min b.w b.h / 8) in
   let area = { x = b.x + inset; y = b.y + inset; w = b.w - 2 * inset; h = b.h - 2 * inset } in
-  let max_zoom = max font_zoom pitch.zoom in
   Option.map (fun (panel : fit) ->
     let center_x, center_y = Art.project ~x:(Match.width /. 2.) ~y:(Match.height /. 2.) in
-    let x = b.x + center_x * b.w / (pitch.texels_w * pitch.sample) - panel.box.w / 2 in
-    let y = b.y + center_y * b.h / (pitch.texels_h * pitch.sample) - panel.box.h / 2 in
+    let x = b.x + Art.nearest (float center_x *. float b.w /. float Art.width) - panel.box.w / 2 in
+    let y = b.y + Art.nearest (float center_y *. float b.h /. float Art.height) - panel.box.h / 2 in
     let bounds = { panel.box with
       x = max area.x (min (area.x + area.w - panel.box.w) x);
       y = max area.y (min (area.y + area.h - panel.box.h) y) } in
@@ -176,7 +186,7 @@ let join_notice count =
   text image ~x:29 ~y:5 ~scale:1 0xfff2d4ffl label;
   image
 
-let join_layer ~density ~font_zoom ~width ~margin ~stadium_top scorebug stadium count =
+let join_layer ~density ~font_zoom ~width ~margin ~footer_y scorebug (stadium : box) count =
   let image = join_notice count in
   let place (area : box) ~align ~min_zoom =
     match fit ~density ~max_zoom:font_zoom area ~w:image.w ~h:image.h with
@@ -188,17 +198,16 @@ let join_layer ~density ~font_zoom ~width ~margin ~stadium_top scorebug stadium 
   let beside_board = Option.bind scorebug (fun score ->
     let b = score.box in
     let x = b.x + b.w + 6 in
-    place { x; y = b.y; w = width - margin - x; h = b.h } ~align:`Left ~min_zoom:font_zoom)
+    place { x; y = b.y; w = width - max margin 44 - x; h = b.h } ~align:`Left ~min_zoom:font_zoom)
   in
   match beside_board with
   | Some _ -> beside_board
   | None ->
-      (* The gap above the stadium and the first strip of scenery are clear of play. *)
-      Option.bind stadium (fun pitch ->
-        let b = pitch.box in
-        let y = stadium_top + 2 in
-        place { x = b.x + 3; y; w = b.w - 6; h = b.y + b.h / 12 - y }
-          ~align:`Right ~min_zoom:1)
+      (* The boardwalk below the pitch stays clear of the ball. *)
+      let _, touchline = Art.project ~x:0. ~y:Match.height in
+      let y = stadium.y + Art.nearest (float touchline *. float stadium.h /. float Art.height) + 2 in
+      place { x = margin; y; w = width - 2 * margin; h = footer_y - y - 2 }
+        ~align:`Right ~min_zoom:1
 
 let wrap text max_width =
   let add (lines, current) word =
@@ -210,8 +219,9 @@ let wrap text max_width =
   List.rev (current :: lines)
 
 let create ?full_time ?joined ~width ~height ~density footer =
-  let width = max 1 (min Playbit.max_canvas_edge width)
-  and height = max 1 (min Playbit.max_canvas_edge height) in
+  let width = max 1 (min Playbit.max_window_canvas_edge width)
+  and height = max 1 (min Playbit.max_window_canvas_edge height) in
+  let stadium = stadium_bounds width height in
   let margin = min 8 (width / 32) in
   let usable = width - 2 * margin in
   let font_zoom = max 1 (int_of_float (Float.round density)) in
@@ -229,9 +239,11 @@ let create ?full_time ?joined ~width ~height ~density footer =
   in
   let rows = List.filter (List.exists (fun (_, text) -> text <> "")) rows in
   let footer_y = max 0 (height - List.length rows * line - min 4 (height / 100)) in
-  let labels = ref [] and action = ref None in
-  let label ~align ~y ~row_h ~interactive text =
-    let image = lettering text in
+  let footer_bar = Playbit.View.Rect
+    { x = 0; y = footer_y; width; height = height - footer_y; color = 0x1c3330efl } in
+  let labels = ref [footer_bar] and action = ref None in
+  let label ?(backed=false) ~align ~y ~row_h ~interactive text =
+    let image = lettering ~backed text in
     let area = { x = margin; y; w = usable; h = min row_h (height - y) } in
     match fit ~density ~max_zoom:font_zoom area ~w:image.w ~h:image.h with
     | None -> ()
@@ -247,56 +259,46 @@ let create ?full_time ?joined ~width ~height ~density footer =
     List.iter (fun (align, text) ->
       label ~align ~y:(footer_y + row * line) ~row_h:line ~interactive:(text = footer.hint) text
     ) labels) rows;
-  let top = min 8 (height / 45) in
+  (* Allow 140 points on either side of the centered scoreboard for the native
+     title and controls. In a narrow window it sits below the titlebar. *)
+  let max_zoom = max 1 (device density stadium.w / Art.width) in
+  let board_width = int_of_float (ceil (float scorebug_width *. float max_zoom /. density)) in
+  let top = min height (if width >= board_width + 2 * 140 then 6 else 32) in
   let messages = match footer.message with
     | None -> []
     | Some text -> wrap text (max 1 (int_of_float (float usable *. density /. float font_zoom)))
   in
   let board_area = { x = 0; y = top; w = width; h = max 0 ((footer_y - top) / 4) } in
-  (* Leave room for a goal call so the pitch stays under the pointer when a team scores. *)
-  let stadium_top score_h = top + score_h + max 1 (List.length messages) * line + min 4 (height / 40) in
-  (* Size the ground and scoreboard together: on a big display both should grow. *)
-  let pitch_room = { x = 0; y = 0; w = width; h = max 0 (footer_y - top) } in
-  let max_zoom = max 1 (min (device density width / Art.width)
-    (device density pitch_room.h / (Art.height + scorebug_height))) in
   let scorebug =
     Option.map (fun f -> { f with box = { f.box with y = top } })
       (fit ~density ~max_zoom board_area ~w:scorebug_width ~h:scorebug_height) in
   let score_h = Option.fold ~none:0 ~some:(fun f -> f.box.h) scorebug in
   List.iteri (fun i message ->
-    label ~align:`Center ~y:(top + score_h + i * line) ~row_h:line ~interactive:false message
+    label ~backed:true ~align:`Center ~y:(top + score_h + i * line) ~row_h:line ~interactive:false message
   ) messages;
-  let y = stadium_top score_h in
-  let area = { x = 0; y; w = width; h = max 0 (footer_y - y - min 3 (height / 50)) } in
-  let stadium = fit ~density ~max_zoom:max_int area ~w:Art.width ~h:Art.height in
-  let result, action = match full_time, stadium with
-    | Some full_time, Some pitch ->
-        (match result_layer ~density ~font_zoom pitch full_time with
-         | Some (result, action) -> (Some result, action)
-         | None -> (None, None))
-    | _ -> (None, !action) in
+  let result, action = match full_time with
+    | Some full_time ->
+        (match result_layer ~density ~max_zoom:(max font_zoom max_zoom) stadium full_time with
+         | Some (result, action) -> Some result, action
+         | None -> None, None)
+    | None -> None, !action in
   let labels = List.rev !labels in
   let labels = match joined with
     | Some count when count > 0 ->
-        (match join_layer ~density ~font_zoom ~width ~margin ~stadium_top:y scorebug stadium count with
+        (match join_layer ~density ~font_zoom ~width ~margin ~footer_y scorebug stadium count with
          | Some notice -> notice :: labels
          | None -> labels)
     | _ -> labels
   in
-  { width; height; stadium; scorebug; labels; result; action }
+  let overlays = match result with Some panel -> labels @ [panel] | None -> labels in
+  { width; height; stadium; scorebug; overlays; action }
 
 let draw layout ~pitch ~board =
-  let add_layer fit w h pixels layers =
-    match fit with
-    | None -> layers
-    | Some fit -> item fit { w; h; rgba = pixels () } :: layers
-  in
-  let layers = match layout.result with
-    | None -> layout.labels
-    | Some panel -> panel :: layout.labels
-  in
-  let layers = add_layer layout.scorebug scorebug_width scorebug_height board layers in
-  let layers = add_layer layout.stadium Art.width Art.height pitch layers in
-  Playbit.View.Rect
-    { x = 0; y = 0; width = layout.width; height = layout.height; color = 0x1c3330ffl }
+  let layers = match layout.scorebug with
+    | None -> layout.overlays
+    | Some fit ->
+        item fit { w = scorebug_width; h = scorebug_height; rgba = board () } :: layout.overlays in
+  let b = layout.stadium in
+  Playbit.View.Pixels
+    ({ x = b.x; y = b.y; width = b.w; height = b.h; color = 0l }, Art.width, Art.height, pitch ())
   :: layers

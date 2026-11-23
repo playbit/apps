@@ -11,7 +11,10 @@ required_host_features = [
     "session.channel.begin",
     "session.channel.take",
     "session.read",
+    "ui.canvas.clear.v1",
     "ui.canvas.pixels.v1",
-    "ui.canvas.viewport.v1",
+    "ui.canvas.window.v1",
+    "ui.window.size-constraints.v1",
+    "ui.window.style.v1",
     "wake.after",
 ]
