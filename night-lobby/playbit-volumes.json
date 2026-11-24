@@ -1,0 +1,41 @@
+{
+  "root": {
+    "permissions": {
+      "grants": [
+        {
+          "subject": {
+            "kind": "public"
+          },
+          "permissions": [
+            "read"
+          ]
+        }
+      ]
+    },
+    "databases": [
+      {
+        "id": "E4GJEbvMBvh1g8k7ty2V",
+        "name": "world-state",
+        "kind": {
+          "type": "kv_db"
+        }
+      }
+    ],
+    "blobs": []
+  },
+  "session": {
+    "permissions": {
+      "grants": []
+    },
+    "databases": [
+      {
+        "id": "3A2HVZwYNDJ56YLD2aoq8",
+        "name": "room-players",
+        "kind": {
+          "type": "kv_db"
+        }
+      }
+    ],
+    "blobs": []
+  }
+}

@@ -1,0 +1,15 @@
+app_id = "night-lobby"
+name = "Night Lobby"
+lang = "rust"
+required_host_features = ["automatic-volumes.v1", "display-names.v1", "identity.read", "kv.keys.begin", "kv.keys.take", "kv.put.begin", "kv.put.take", "kv.read.begin", "kv.read.take", "presence.read", "session.channel", "session.channel.begin", "session.channel.take", "session.read", "ui.canvas.clear.v1", "ui.canvas.pixels.v1", "ui.canvas.viewport.v1", "ui.window.size-constraints.v1", "ui.window.style.v1", "wake.after"]
+icon = "icon.svg"
+build_cmd = "cargo rustc --lib --crate-type cdylib"
+
+[release]
+build_cmd = "cargo rustc --release --lib --crate-type cdylib"
+
+[native]
+build_cmd = "cargo rustc --bin playbit-app --features native --target aarch64-apple-darwin -- @target/playbit/native.rsp"
+
+[native.release]
+build_cmd = "cargo rustc --release --bin playbit-app --features native --target aarch64-apple-darwin -- @target/playbit/native.rsp"
