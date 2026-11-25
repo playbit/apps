@@ -337,7 +337,7 @@ mod tests {
         app.now = crate::guest::STEP_MS / 2;
         let mut other = Guest::new([2; 16]);
         other.stand((8, 0));
-        app.room.saved.insert(other.account, other);
+        app.room.guests.insert(other.account, other);
         let mut art = Pixels::blank();
         let map = map_bounds(art.bounds);
         minimap(&mut art, &app);

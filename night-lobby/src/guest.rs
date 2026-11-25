@@ -8,6 +8,7 @@ mod avatar_art;
 pub type Id = [u8; 16];
 pub type Cell = (i32, i32);
 pub const STEP_MS: u64 = 350;
+pub const OFFLINE_VISIBILITY_MS: u64 = 30 * 60 * 1000;
 pub const LOOKS: [(&str, Ink, Ink); 6] = [
     ("Marigold", 0xf0b054, 0xba7644),
     ("Lagoon", 0x77bcb2, 0x428481),

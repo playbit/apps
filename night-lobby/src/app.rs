@@ -60,6 +60,7 @@ struct App {
     backdrop: Option<(Place, pixels::Pixels)>,
     route: VecDeque<Cell>,
     now: u64,
+    presence_now: u64,
     frame_since_wake: bool,
     frame_us: u32,
     clear_field: bool,
@@ -91,6 +92,7 @@ impl Default for App {
             backdrop: None,
             route: VecDeque::new(),
             now: 0,
+            presence_now: 0,
             frame_since_wake: false,
             frame_us: 0,
             clear_field: false,
@@ -126,13 +128,7 @@ impl App {
         self.room
             .actors()
             .filter(move |(id, _)| !outside && !self.plaza.people.contains_key(id))
-            .chain(
-                self.plaza
-                    .people
-                    .iter()
-                    .filter(move |_| outside)
-                    .map(|(&id, v)| (id, &v.avatar)),
-            )
+            .chain(self.plaza.actors().filter(move |_| outside))
     }
     fn conversation(&self) -> &Conversation {
         if self.outside() {
@@ -166,7 +162,7 @@ impl App {
                 &mut self.storage.world,
                 self.room.local.clone(),
                 self.room.id,
-                self.now,
+                self.presence_now,
             );
         }
         self.room.changed = true;
@@ -221,7 +217,7 @@ impl App {
                     &mut self.storage.world,
                     account,
                     self.room.id,
-                    self.now,
+                    self.presence_now,
                     false,
                 );
             } else {
@@ -341,7 +337,7 @@ impl App {
                 &mut self.storage.world,
                 account,
                 self.room.id,
-                self.now,
+                self.presence_now,
                 true,
             );
         } else {
@@ -395,7 +391,7 @@ impl App {
                 &mut self.storage.world,
                 local.account,
                 self.room.id,
-                self.now,
+                self.presence_now,
                 false,
             );
         }
@@ -443,12 +439,6 @@ impl App {
         // at the faster frame cadence and uses the same elapsed clock.
         dirty |= self.panel == Panel::Room && self.now / 240 != previous / 240;
         self.step();
-        dirty |= self.plaza.tick(
-            &mut self.storage.world,
-            self.room.local.account,
-            self.room.id,
-            self.now,
-        );
         for g in self
             .room
             .guests
@@ -588,6 +578,8 @@ impl App {
 }
 
 fn turn(app: &mut App, c: &mut Context, view: &mut ViewEncoder) {
+    // Presence uses elapsed host time because display frames clamp long gaps.
+    app.presence_now = c.clock_read() / 1_000_000;
     let mut dirty = !app.started;
     let old_storage_errors = (
         app.storage.world.error.clone(),
@@ -723,9 +715,14 @@ fn turn(app: &mut App, c: &mut Context, view: &mut ViewEncoder) {
                     if public {
                         let prev = app.place();
                         let world = &app.storage.world;
-                        app.plaza
-                            .reconcile(world, app.room.local.account, app.now, !loaded);
-                        app.plaza.observe_pulses(world, app.now, !loaded);
+                        app.plaza.reconcile(
+                            world,
+                            app.room.local.account,
+                            app.now,
+                            app.presence_now,
+                            !loaded,
+                        );
+                        app.plaza.observe_pulses(world, app.presence_now, !loaded);
                         square_lines = app.square_chat.update(
                             world.rows.iter().filter_map(|(key, row)| {
                                 if let WorldKey::Chat(message) = key {
@@ -784,6 +781,13 @@ fn turn(app: &mut App, c: &mut Context, view: &mut ViewEncoder) {
             _ => {}
         }
     }
+    dirty |= app.room.expire_offline(app.presence_now);
+    dirty |= app.plaza.tick(
+        &mut app.storage.world,
+        app.room.local.account,
+        app.room.id,
+        app.presence_now,
+    );
     let archive = (app.chat_visible() && !app.outside()).then_some(app.room.session);
     app.storage.world.select_archive(archive);
     let busy = [
@@ -820,7 +824,7 @@ mod tests {
         let mut app = App::default();
         app.room.local = Guest::new([1; 16]);
         let bar_guest = [2; 16];
-        app.room.saved.insert(bar_guest, Guest::new(bar_guest));
+        app.room.guests.insert(bar_guest, Guest::new(bar_guest));
         let passerby = Guest::new([3; 16]);
         app.plaza
             .arrive(&mut app.storage.world, passerby.clone(), [4; 16], 0);

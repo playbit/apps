@@ -1,5 +1,5 @@
 use crate::glasshouse::walkable;
-use crate::guest::{Guest, Id};
+use crate::guest::{Guest, Id, OFFLINE_VISIBILITY_MS};
 use playbit_api::abi::{environment::DISPLAY_NAME_BYTES, operations::Identity, syscall::Error};
 use playbit_api::context::{Channel, Completion, Context, Event, OperationHandle, Participant};
 use std::collections::BTreeMap;
@@ -28,6 +28,7 @@ pub struct Room {
     pub local: Guest,
     pub guests: BTreeMap<Id, Guest>,
     pub saved: BTreeMap<Id, Guest>,
+    recently_offline: BTreeMap<Id, (Guest, u64)>,
     // Keep the last presence observation while a departed player's World record syncs.
     pub display_names: BTreeMap<Id, String>,
     instances: BTreeMap<Id, (Id, u64)>,
@@ -51,6 +52,7 @@ impl Default for Room {
             local: Guest::new([0; 16]),
             guests: BTreeMap::new(),
             saved: BTreeMap::new(),
+            recently_offline: BTreeMap::new(),
             display_names: BTreeMap::new(),
             instances: BTreeMap::new(),
             sequence: 0,
@@ -72,14 +74,14 @@ impl Room {
     pub fn actors(&self) -> impl Iterator<Item = (Id, &Guest)> {
         std::iter::once((self.local.account, &self.local))
             .chain(self.guests.iter().map(|(&id, g)| (id, g)))
-            .chain(
-                self.saved
-                    .iter()
-                    .filter(|(account, _)| {
-                        **account != self.local.account && !self.guests.contains_key(*account)
-                    })
-                    .map(|(&account, g)| (account, g)),
-            )
+            .chain(self.recently_offline.iter().map(|(&id, (g, _))| (id, g)))
+    }
+
+    pub fn expire_offline(&mut self, now: u64) -> bool {
+        let before = self.recently_offline.len();
+        self.recently_offline
+            .retain(|_, (_, left)| now.saturating_sub(*left) < OFFLINE_VISIBILITY_MS);
+        self.recently_offline.len() != before
     }
 
     pub fn start(&mut self, c: &mut Context) {
@@ -114,9 +116,9 @@ impl Room {
         let Ok(list) = c.presence(&mut people) else {
             return;
         };
-        self.apply_presence(list);
+        self.apply_presence(list, c.clock_read() / 1_000_000);
     }
-    fn apply_presence(&mut self, list: &[Participant]) {
+    fn apply_presence(&mut self, list: &[Participant], now: u64) {
         let mut online = BTreeMap::new();
         for p in list {
             let name = online.entry(p.account_id).or_insert(None);
@@ -127,8 +129,13 @@ impl Room {
         self.local.sleeping = !online.contains_key(&self.local.account);
         self.instances
             .retain(|id, _| list.iter().any(|p| p.instance_id == *id));
-        self.guests.retain(|id, _| online.contains_key(id));
+        for (id, mut guest) in self.guests.extract_if(.., |id, _| !online.contains_key(id)) {
+            guest.stand(guest.cell);
+            guest.sleeping = true;
+            self.recently_offline.insert(id, (guest, now));
+        }
         for (id, name) in online {
+            self.recently_offline.remove(&id);
             // The local identity may already be newer than this roster snapshot.
             if id != self.local.account || !self.display_names.contains_key(&id) {
                 self.display_names.insert(id, display_name(name));
@@ -375,13 +382,13 @@ mod tests {
         let local = participant(me, 3, "stale roster");
         let empty = participant(peer, 4, "");
         app.room
-            .apply_presence(&[local, participant(peer, 5, "李明"), empty]);
+            .apply_presence(&[local, participant(peer, 5, "李明"), empty], 0);
         assert_eq!(app.player_name(me), "Ras");
         assert_eq!(app.player_name(peer), "李明");
         app.room
-            .apply_presence(&[empty, participant(peer, 5, "李明 🐈")]);
+            .apply_presence(&[empty, participant(peer, 5, "李明 🐈")], 0);
         assert_eq!(app.player_name(peer), "李明 🐈");
-        app.room.apply_presence(&[]);
+        app.room.apply_presence(&[], 0);
         assert_eq!(app.player_name(peer), "李明 🐈");
         app.storage
             .world
@@ -390,12 +397,12 @@ mod tests {
         assert_eq!(app.player_name(peer), "New plaza name");
         identity.display_name.fill(0);
         assert!(app.room.identity_name(&identity));
-        app.room.apply_presence(&[local]);
+        app.room.apply_presence(&[local], 0);
         assert_eq!(app.player_name(me), UNNAMED);
     }
 
     #[test]
-    fn last_connection_sleeps_and_rejoining_wakes_one_saved_avatar() {
+    fn last_connection_sleeps_then_expires_and_rejoining_restores_the_avatar() {
         let mut room = Room {
             id: [1; 16],
             local: Guest::new([2; 16]),
@@ -419,18 +426,29 @@ mod tests {
             instance_id: [5; 16],
             ..a
         };
-        for (list, asleep) in [
-            (vec![local], true),
-            (vec![local, a, b], false),
-            (vec![local, b], false),
-            (vec![local], true),
-            (vec![local, a], false),
+        room.apply_presence(&[local], 0);
+        assert_eq!(room.actors().count(), 1);
+        let left_at = 300;
+        for (list, now, asleep) in [
+            (vec![local, a, b], 100, false),
+            (vec![local, b], 200, false),
+            (vec![local], left_at, true),
         ] {
-            room.apply_presence(&list);
+            room.apply_presence(&list, now);
             assert_eq!(room.actors().count(), 2);
             let guest = room.actors().find(|(id, _)| id == &visitor).unwrap().1;
             assert_eq!(guest.sleeping, asleep);
             assert_eq!(guest.checkpoint(), state);
         }
+        let deadline = left_at + OFFLINE_VISIBILITY_MS;
+        room.apply_presence(&[local], deadline - 1);
+        assert!(!room.expire_offline(deadline - 1));
+        assert_eq!(room.actors().count(), 2);
+        assert!(room.expire_offline(deadline));
+        assert_eq!(room.actors().count(), 1);
+        room.apply_presence(&[local, a], deadline + 1);
+        assert_eq!(room.actors().count(), 2);
+        assert!(!room.guests[&visitor].sleeping);
+        assert_eq!(room.guests[&visitor].checkpoint(), state);
     }
 }

@@ -1,7 +1,7 @@
 use crate::world::WorldKey;
 use crate::{
     glasshouse,
-    guest::{Cell, Guest, Id},
+    guest::{Cell, Guest, Id, OFFLINE_VISIBILITY_MS},
     storage::Table,
 };
 use std::collections::BTreeMap;
@@ -51,7 +51,7 @@ pub struct Visitor {
     pub avatar: Guest,
     record: Vec<u8>,
     pulse: Option<Vec<u8>>,
-    seen: Option<u64>,
+    last_seen: Option<u64>,
 }
 #[derive(Default)]
 pub struct Plaza {
@@ -61,6 +61,11 @@ pub struct Plaza {
     wave: u64,
 }
 impl Plaza {
+    pub fn actors(&self) -> impl Iterator<Item = (Id, &Guest)> {
+        self.people
+            .iter()
+            .filter_map(|(&id, v)| v.last_seen.is_some().then_some((id, &v.avatar)))
+    }
     pub fn local(&self, id: Id) -> Option<&Guest> {
         self.people.get(&id).map(|v| &v.avatar)
     }
@@ -84,7 +89,7 @@ impl Plaza {
                 avatar,
                 record: vec![],
                 pulse: None,
-                seen: Some(now),
+                last_seen: Some(now),
             },
         );
         self.publish(world, id, instance, now, false);
@@ -129,10 +134,16 @@ impl Plaza {
         }
         let mut dirty = false;
         for (&key, v) in &mut self.people {
-            if key != id
-                && !v.avatar.sleeping
-                && v.seen.is_none_or(|t| now.saturating_sub(t) >= SLEEP_MS)
-            {
+            let Some(last_seen) = v.last_seen.filter(|_| key != id) else {
+                continue;
+            };
+            let idle = now.saturating_sub(last_seen);
+            if idle >= OFFLINE_VISIBILITY_MS {
+                // Keep the record as a baseline so an unchanged scan cannot bring it back.
+                v.last_seen = None;
+                v.avatar.sleeping = true;
+                dirty = true;
+            } else if idle >= SLEEP_MS && !v.avatar.sleeping {
                 v.avatar.sleeping = true;
                 dirty = true;
             }
@@ -151,11 +162,18 @@ impl Plaza {
             visitor.pulse = next.cloned();
             if next.is_some() && !first {
                 visitor.avatar.sleeping = false;
-                visitor.seen = Some(now);
+                visitor.last_seen = Some(now);
             }
         }
     }
-    pub fn reconcile(&mut self, world: &Table<WorldKey>, local: Id, now: u64, initial: bool) {
+    pub fn reconcile(
+        &mut self,
+        world: &Table<WorldKey>,
+        local: Id,
+        now: u64,
+        presence_now: u64,
+        initial: bool,
+    ) {
         let pending = world.pending_where(|key| *key == WorldKey::Avatar(local)) > 0;
         self.people.retain(|key, _| {
             (*key == local && pending)
@@ -183,7 +201,7 @@ impl Plaza {
                     v.avatar.wave_until = now + 2300;
                 }
                 v.avatar.sleeping = false;
-                v.seen = Some(now);
+                v.last_seen = Some(presence_now);
                 v.record = b.clone();
             } else {
                 avatar.sleeping = initial && id != local;
@@ -193,7 +211,7 @@ impl Plaza {
                         avatar,
                         record: b.clone(),
                         pulse: world.rows.get(&WorldKey::Pulse(id)).cloned(),
-                        seen: (!initial || id == local).then_some(now),
+                        last_seen: (!initial || id == local).then_some(presence_now),
                     },
                 );
             }
@@ -234,13 +252,13 @@ mod tests {
         let mut remote = Plaza::default();
         let mut world = Storage::default().world;
         world.rows.insert(WorldKey::Avatar(id), vec![0]);
-        remote.reconcile(&world, observer, 1000, false);
+        remote.reconcile(&world, observer, 0, 1000, false);
         world.rows.insert(WorldKey::Pulse(id), vec![7; 24]);
         remote.observe_pulses(&world, 1100, false);
         assert!(remote.local(id).is_none());
     }
     #[test]
-    fn remote_session_observes_arrival_sleep_wake_and_return_to_private() {
+    fn remote_session_expires_stale_avatars_and_fresh_activity_brings_them_back() {
         let mut sender = Plaza::default();
         let mut world = Storage::default().world;
         let mut other = Storage::default().world;
@@ -252,21 +270,32 @@ mod tests {
         other
             .rows
             .insert(WorldKey::Avatar(id), sender.people[&id].record.clone());
-        observer.reconcile(&other, reader, 0, true);
-        assert!(observer.people[&id].avatar.sleeping);
+        observer.reconcile(&other, reader, 0, 0, true);
+        assert_eq!(observer.actors().count(), 0);
         sender.local_mut(id).unwrap().go((1, 5), 500);
         sender.publish(&mut world, id, instance, 500, true);
         other
             .rows
             .insert(WorldKey::Avatar(id), sender.people[&id].record.clone());
-        observer.reconcile(&other, reader, 500, false);
-        let visitor = &observer.people[&id].avatar;
+        observer.reconcile(&other, reader, 500, 500, false);
+        let (_, visitor) = observer.actors().next().unwrap();
         assert_eq!(visitor.cell, (1, 5));
         assert!(!visitor.sleeping && visitor.wave_until > 500);
         observer.tick(&mut other, reader, [3; 16], 500 + SLEEP_MS);
-        assert!(observer.people[&id].avatar.sleeping);
+        assert!(observer.actors().next().unwrap().1.sleeping);
+        let deadline = 500 + OFFLINE_VISIBILITY_MS;
+        assert!(!observer.tick(&mut other, reader, [3; 16], deadline - 1));
+        assert_eq!(observer.actors().count(), 1);
+        assert!(observer.tick(&mut other, reader, [3; 16], deadline));
+        assert_eq!(observer.actors().count(), 0);
+        observer.reconcile(&other, reader, 750, deadline + 1, false);
+        observer.observe_pulses(&other, deadline + 1, false);
+        assert_eq!(observer.actors().count(), 0);
+        other.rows.insert(WorldKey::Pulse(id), vec![7; 24]);
+        observer.observe_pulses(&other, deadline + 2, false);
+        assert!(!observer.actors().next().unwrap().1.sleeping);
         other.rows.insert(WorldKey::Avatar(id), vec![0]);
-        observer.reconcile(&other, reader, 30_000, false);
+        observer.reconcile(&other, reader, 750, deadline + 3, false);
         assert!(!observer.people.contains_key(&id));
     }
 }
