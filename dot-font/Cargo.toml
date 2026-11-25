@@ -1,0 +1,36 @@
+[package]
+name = "playbit-app"
+version = "0.1.0"
+edition = "2024"
+
+# pb build produces Wasm. Native Mac:
+# pb build --native --release
+[features]
+native = []
+
+[[bin]]
+name = "playbit-app"
+path = "target/playbit/sdk/native-main.rs"
+required-features = ["native"]
+
+[lib]
+name = "playbit_app"
+path = "src/app.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+playbit-api = { path = "target/playbit/sdk/playbit-api", features = ["guest"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+write-fonts = {version = "0.56", features = ["read"]}
+kurbo = "0.13"
+tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
+bs58 = "0.5.1"
+
+[profile.dev]
+opt-level = 2
+strip = "debuginfo"
+
+[lints.rust]
+
+[workspace]

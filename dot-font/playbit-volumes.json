@@ -1,0 +1,27 @@
+{
+    "root": {
+        "permissions": {
+            "grants": [
+                {
+                    "subject": {
+                        "kind": "public"
+                    },
+                    "permissions": [
+                        "read",
+                        "write"
+                    ]
+                }
+            ]
+        },
+        "databases": [
+            {
+                "id": "63MPrHJzEcTiCkScpxY71",
+                "name": "glyph-edits",
+                "kind": {
+                    "type": "blob_log"
+                }
+            }
+        ],
+        "blobs": []
+    }
+}
