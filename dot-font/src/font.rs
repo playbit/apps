@@ -438,18 +438,6 @@ pub fn seed() -> BTreeMap<char, Glyph> {
         .collect()
 }
 
-pub fn alphabet(font: &BTreeMap<char, Glyph>) -> Vec<char> {
-    ('a'..='z')
-        .chain('A'..='Z')
-        .chain('0'..='9')
-        .chain(
-            font.keys()
-                .copied()
-                .filter(|ch| !ch.is_ascii_alphanumeric()),
-        )
-        .collect()
-}
-
 pub fn codepoint(ch: char) -> String {
     format!("U+{:04X}", ch as u32)
 }

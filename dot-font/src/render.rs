@@ -279,7 +279,8 @@ fn palette(s: &mut Sheet, app: &App, l: &Layout, cache: &mut Cache) {
         MUTED,
         false,
     );
-    let start = app.page * l.count;
+    let page = app.palette_page(l);
+    let start = page * l.count;
     for (i, &ch) in app.doc.order.iter().skip(start).take(l.count).enumerate() {
         let tile = l.glyph_tile(i);
         let selected = ch == app.selected;
@@ -309,13 +310,13 @@ fn palette(s: &mut Sheet, app: &App, l: &Layout, cache: &mut Cache) {
     let pages = app.doc.order.len().div_ceil(l.count);
     s.label(
         Box2::new(45, l.add.y, b.w - 120, 25),
-        format!("{} / {}", app.page + 1, pages),
+        format!("{} / {}", page + 1, pages),
         11,
         MUTED,
         false,
     );
-    chevron(s, l.prev, false, app.page > 0);
-    chevron(s, l.next, true, app.page + 1 < pages);
+    chevron(s, l.prev, false, page > 0);
+    chevron(s, l.next, true, page + 1 < pages);
 }
 
 fn board(s: &mut Sheet, app: &App, l: &Layout, cache: &mut Cache) {

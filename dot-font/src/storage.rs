@@ -34,7 +34,7 @@ impl Default for Document {
     fn default() -> Self {
         let glyphs = font::seed();
         Self {
-            order: font::alphabet(&glyphs),
+            order: glyphs.keys().copied().collect(),
             legacy: glyphs.clone(),
             legacy_versions: Default::default(),
             line_versions: Default::default(),
@@ -69,7 +69,8 @@ impl Document {
         let mut changed = !self.glyphs.contains_key(&edit.glyph);
         if changed {
             self.glyphs.insert(edit.glyph, Glyph::default());
-            self.order = font::alphabet(&self.glyphs);
+            let index = self.order.partition_point(|&ch| ch < edit.glyph);
+            self.order.insert(index, edit.glyph);
         }
         let glyph = self.glyphs.get_mut(&edit.glyph).unwrap();
         let stamp = (edit.clock, edit.id);
@@ -364,7 +365,7 @@ mod tests {
         doc.apply(&first);
         assert_eq!(doc.glyphs[&glyph].at(a), 0);
         assert_eq!(doc.glyphs[&glyph].at(b), 8);
-        assert_eq!(doc.order.iter().filter(|&&c| c == glyph).count(), 1);
+        assert!(doc.order.iter().eq(doc.glyphs.keys()));
     }
     #[test]
     fn manual_disconnect_survives_out_of_order_legacy_import_and_replay() {

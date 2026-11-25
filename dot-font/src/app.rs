@@ -111,7 +111,7 @@ struct App {
     last_click: Option<(Cell, i32, i32, u64)>,
     sample: String,
     size: u8,
-    page: usize,
+    palette_anchor: char,
     gesture: Option<Gesture>,
     hover: Option<(i32, i32)>,
     undo: Vec<History>,
@@ -124,13 +124,14 @@ struct App {
 
 impl Default for App {
     fn default() -> Self {
+        let selected = 'a';
         Self {
             doc: Document::default(),
             store: Store::default(),
             export: Default::default(),
             surface: (800, 500),
             density: 1.,
-            selected: 'a',
+            selected,
             point: None,
             curves: true,
             lines: false,
@@ -138,7 +139,7 @@ impl Default for App {
             last_click: None,
             sample: SPECIMEN.to_owned(),
             size: 11,
-            page: 0,
+            palette_anchor: selected,
             gesture: None,
             hover: None,
             undo: Vec::new(),
@@ -156,6 +157,14 @@ impl App {
         Layout::new(self.surface.0 as i32, self.surface.1 as i32)
     }
 
+    fn glyph_index(&self, ch: char) -> usize {
+        self.doc.order.binary_search(&ch).expect("glyph in palette")
+    }
+
+    fn palette_page(&self, layout: &Layout) -> usize {
+        self.glyph_index(self.palette_anchor) / layout.count
+    }
+
     fn display_glyph<'a>(&'a self, ch: char, g: &'a Glyph) -> &'a Glyph {
         if ch == self.selected
             && let Some(drag) = &self.gesture
@@ -171,9 +180,7 @@ impl App {
         self.selected = ch;
         self.point = None;
         self.gesture = None;
-        if let Some(i) = self.doc.order.iter().position(|c| *c == ch) {
-            self.page = i / self.layout().count;
-        }
+        self.palette_anchor = ch;
     }
 
     fn show_form(&mut self, form: Form) {
@@ -355,19 +362,23 @@ impl App {
             self.show_form(Form::Character);
             return;
         }
-        let pages = self.doc.order.len().div_ceil(l.count);
+        let page = self.palette_page(l);
         if l.prev.contains(x, y) {
-            self.page = self.page.saturating_sub(1);
+            if page > 0 {
+                self.palette_anchor = self.doc.order[(page - 1) * l.count];
+            }
             return;
         }
         if l.next.contains(x, y) {
-            self.page = (self.page + 1).min(pages - 1);
+            if let Some(&ch) = self.doc.order.get((page + 1) * l.count) {
+                self.palette_anchor = ch;
+            }
             return;
         }
         if l.palette.contains(x, y) {
             for i in 0..l.count {
                 if l.glyph_tile(i).contains(x, y) {
-                    if let Some(&ch) = self.doc.order.get(self.page * l.count + i) {
+                    if let Some(&ch) = self.doc.order.get(page * l.count + i) {
                         self.select(ch);
                     }
                     break;
@@ -584,12 +595,7 @@ impl App {
                 4 => cols,
                 _ => return,
             };
-            let i = self
-                .doc
-                .order
-                .iter()
-                .position(|&c| c == self.selected)
-                .unwrap_or(0);
+            let i = self.glyph_index(self.selected);
             let j = (i as isize + d).clamp(0, self.doc.order.len() as isize - 1) as usize;
             self.select(self.doc.order[j]);
         }
@@ -751,8 +757,6 @@ fn turn(app: &mut App, ctx: &mut Context, view: &mut ViewEncoder) {
                 {
                     app.surface = (s.width.min(4096), s.height.min(4096));
                     app.density = s.pixel_scale;
-                    let n = app.layout().count;
-                    app.page = app.page.min(app.doc.order.len().div_ceil(n) - 1);
                     dirty = true;
                 }
             }
