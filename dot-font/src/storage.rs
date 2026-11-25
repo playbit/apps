@@ -13,6 +13,9 @@ struct Edit {
     // None identifies a record written by the original bitmap editor.
     #[serde(default)]
     lines: Option<Vec<(Link, bool)>>,
+    // An absent cell is untouched; a null value clears that cell's override.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pixels: Vec<(Cell, Option<bool>)>,
 }
 
 type Stamp = (u64, [u8; 16]);
@@ -21,6 +24,7 @@ pub struct Document {
     pub order: Vec<char>,
     clock: u64,
     versions: BTreeMap<(char, Cell), Stamp>,
+    pixel_versions: BTreeMap<(char, Cell), Stamp>,
     legacy: BTreeMap<char, Glyph>,
     legacy_versions: BTreeMap<(char, Cell), Stamp>,
     line_versions: BTreeMap<char, BTreeMap<Link, (Stamp, bool)>>,
@@ -37,6 +41,7 @@ impl Default for Document {
             glyphs,
             clock: 0,
             versions: BTreeMap::new(),
+            pixel_versions: BTreeMap::new(),
         }
     }
 }
@@ -49,6 +54,7 @@ impl Document {
                 .points
                 .iter()
                 .any(|(c, v)| !c.valid() || *v > font::MAX_VALUE)
+            || edit.pixels.iter().any(|(c, _)| !c.valid())
         {
             return false;
         }
@@ -73,6 +79,15 @@ impl Document {
                 *version = stamp;
                 changed |= glyph.at(cell) != value;
                 glyph.set(cell, value);
+            }
+        }
+        for &(cell, value) in &edit.pixels {
+            let version = self.pixel_versions.entry((edit.glyph, cell)).or_default();
+            if stamp > *version {
+                // Keep the stamp for a reset so replay cannot revive an older override.
+                *version = stamp;
+                changed |= glyph.pixel_overrides.get(&cell).copied() != value;
+                glyph.set_pixel_override(cell, value);
             }
         }
         let overrides = self.line_versions.entry(edit.glyph).or_default();
@@ -133,6 +148,7 @@ impl Store {
         ch: char,
         points: Vec<(Cell, u8)>,
         lines: Vec<(Link, bool)>,
+        pixels: Vec<(Cell, Option<bool>)>,
     ) -> bool {
         let mut id = [0; 16];
         if let Err(e) = ctx.random_fill(&mut id) {
@@ -145,6 +161,7 @@ impl Store {
             glyph: ch,
             points,
             lines: Some(lines),
+            pixels,
         };
         self.queue
             .push_back((id, serde_json::to_vec(&edit).expect("encode glyph edit")));
@@ -281,6 +298,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pixel_edits_merge_independently_of_geometry_and_resets_survive_replay() {
+        let ch = '\u{e045}';
+        let a = Cell(1, 0);
+        let b = Cell(2, 0);
+        let c = Cell(3, 0);
+        let mut doc = Document::default();
+        let mut edit = Edit {
+            clock: 3,
+            id: [3; 16],
+            glyph: ch,
+            points: vec![],
+            lines: Some(vec![]),
+            pixels: vec![(a, None)],
+        };
+        // The reset arrives first. Only the other two older overrides should take effect.
+        let replay = |doc: &mut Document, edit: &Edit| {
+            doc.apply(&serde_json::from_slice(&serde_json::to_vec(edit).unwrap()).unwrap());
+        };
+        replay(&mut doc, &edit);
+        edit.clock = 2;
+        edit.pixels = vec![(a, Some(false)), (b, Some(false)), (c, Some(true))];
+        replay(&mut doc, &edit);
+        // Old point-only records have neither a lines field nor a pixels field.
+        let old = serde_json::json!({
+            "clock": 1, "id": edit.id, "glyph": ch,
+            "points": [(a, font::AUTO), (b, font::AUTO)]
+        });
+        doc.apply(&serde_json::from_value(old).unwrap());
+        let g = &doc.glyphs[&ch];
+        assert!(g.links.contains(&Link::between(a, b)));
+        assert_eq!(g.pixels(), [a, c].into());
+
+        edit.clock = 4;
+        edit.pixels = vec![(b, None), (c, None)];
+        replay(&mut doc, &edit);
+        assert_eq!(doc.glyphs[&ch].pixels(), [a, b].into());
+        assert!(doc.glyphs[&ch].pixel_overrides.is_empty());
+    }
+
+    #[test]
     fn edits_merge_per_cell_even_when_replayed_out_of_order() {
         let glyph = '\u{e045}';
         let a = Cell(1, 3);
@@ -291,6 +348,7 @@ mod tests {
             glyph,
             lines: None,
             points: vec![(a, 1), (b, 8)],
+            pixels: vec![],
         };
         let later = Edit {
             clock: 2,
@@ -298,6 +356,7 @@ mod tests {
             glyph,
             lines: None,
             points: vec![(a, 0)],
+            pixels: vec![],
         };
         let mut doc = Document::default();
         doc.apply(&later);
@@ -319,6 +378,7 @@ mod tests {
             glyph: '\u{e045}',
             points: vec![],
             lines: Some(vec![(edge, false)]),
+            pixels: vec![],
         };
         doc.apply(&edit);
         edit.clock = 1;

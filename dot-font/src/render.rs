@@ -179,6 +179,21 @@ impl Sheet {
         self.round(b.inset(1), 4., 252);
         self.label(Box2::new(b.x + 7, b.y, b.w - 8, b.h), title, 11, 59, false);
     }
+
+    fn tool(&mut self, b: Box2, title: &str, active: bool) {
+        if active {
+            self.round(b, 5., INK);
+            self.label(
+                Box2::new(b.x + 8, b.y, b.w - 10, b.h),
+                title,
+                11,
+                PAPER,
+                true,
+            );
+        } else {
+            self.chip(b, title);
+        }
+    }
 }
 
 fn chevron(s: &mut Sheet, b: Box2, forward: bool, enabled: bool) {
@@ -347,6 +362,16 @@ fn board(s: &mut Sheet, app: &App, l: &Layout, cache: &mut Cache) {
             let y = l.base - (i32::from(cell.1) + 1) * l.unit;
             s.rect(Box2::new(x, y, l.unit, l.unit), 0);
         }
+        for (&cell, &ink) in &glyph.pixel_overrides {
+            let x = l.left + i32::from(cell.0) * l.unit;
+            let y = l.base - (i32::from(cell.1) + 1) * l.unit;
+            let mark = (l.unit / 7).clamp(2, 5);
+            s.rect(
+                Box2::new(x + l.unit - mark - 2, y + 2, mark, mark),
+                if ink { 176 } else { 112 },
+            );
+        }
+        s.tool(l.reset_pixels, "Reset pixels", app.reset_pixels);
     } else {
         s.glyph(
             cache,
@@ -417,18 +442,7 @@ fn board(s: &mut Sheet, app: &App, l: &Layout, cache: &mut Cache) {
                 );
             }
         }
-        if app.lines {
-            s.round(l.lines, 5., INK);
-            s.label(
-                Box2::new(l.lines.x + 8, l.lines.y, 40, l.lines.h),
-                "Lines",
-                11,
-                PAPER,
-                true,
-            );
-        } else {
-            s.chip(l.lines, "Lines");
-        }
+        s.tool(l.lines, "Lines", app.lines);
         if app.point.is_some() {
             if !app.lines {
                 s.chip(l.auto, "Auto");
@@ -451,6 +465,8 @@ fn board(s: &mut Sheet, app: &App, l: &Layout, cache: &mut Cache) {
         "Drag between dots to join or cut"
     } else if app.curves {
         "Drag a point to set its direction"
+    } else if app.reset_pixels {
+        "Click or drag to restore automatic pixels"
     } else {
         "Drag to paint or erase"
     };
@@ -465,6 +481,8 @@ fn board(s: &mut Sheet, app: &App, l: &Layout, cache: &mut Cache) {
                 "Join or cut"
             } else if app.curves {
                 "Drag to aim"
+            } else if app.reset_pixels {
+                "Drag to reset"
             } else {
                 "Drag to paint"
             }

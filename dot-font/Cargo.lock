@@ -57,7 +57,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "docdb"
-version = "0.1.4-beta"
+version = "0.1.5-beta"
 
 [[package]]
 name = "equivalent"
@@ -152,7 +152,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "playbit-api"
-version = "0.1.4-beta"
+version = "0.1.5-beta"
 dependencies = [
  "docdb",
 ]

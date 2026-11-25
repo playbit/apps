@@ -75,6 +75,7 @@ impl Link {
 pub struct Glyph {
     cells: [u8; (WIDTH * (TOP - BOTTOM + 1)) as usize],
     pub links: BTreeSet<Link>,
+    pub pixel_overrides: BTreeMap<Cell, bool>,
 }
 
 impl Default for Glyph {
@@ -82,6 +83,7 @@ impl Default for Glyph {
         Self {
             cells: [EMPTY; (WIDTH * (TOP - BOTTOM + 1)) as usize],
             links: BTreeSet::new(),
+            pixel_overrides: BTreeMap::new(),
         }
     }
 }
@@ -209,6 +211,14 @@ impl Glyph {
             .collect()
     }
 
+    pub fn set_pixel_override(&mut self, cell: Cell, value: Option<bool>) {
+        if let Some(ink) = value {
+            self.pixel_overrides.insert(cell, ink);
+        } else {
+            self.pixel_overrides.remove(&cell);
+        }
+    }
+
     pub fn pixels(&self) -> BTreeSet<Cell> {
         let mut pixels: BTreeSet<_> = self.points().map(|(c, _)| c).collect();
         for &link in &self.links {
@@ -216,39 +226,14 @@ impl Glyph {
                 pixels.extend(self.line_pixels(link));
             }
         }
-        pixels
-    }
-
-    // Pixel erasing cuts the shared geometry. Materialize just the affected
-    // long strokes so the unpainted cell stays empty in the derived bitmap.
-    pub fn erase_pixel(&mut self, c: Cell) {
-        let mut long_strokes: Vec<_> = self
-            .links
-            .iter()
-            .copied()
-            .filter(|link| link.spans_cells() && self.linked(link.0, link.1))
-            .map(|link| (link, self.line_pixels(link)))
-            .collect();
-        self.erase(c);
-        // A cut at a shared tip can change how its other leg rounds. Keep
-        // that leg's previous ink too. Each pass consumes one long stroke.
-        while let Some(i) = long_strokes
-            .iter()
-            .position(|(link, cells)| cells.contains(&c) || self.line_pixels(*link) != *cells)
-        {
-            let (link, cells) = long_strokes.swap_remove(i);
-            self.set_link(link, false);
-            for run in cells.split(|p| *p == c) {
-                for &p in run {
-                    if self.at(p) == EMPTY {
-                        self.set(p, NO_DIRECTION);
-                    }
-                }
-                for pair in run.windows(2) {
-                    self.set_link(Link::between(pair[0], pair[1]), true);
-                }
+        for (&cell, &ink) in &self.pixel_overrides {
+            if ink {
+                pixels.insert(cell);
+            } else {
+                pixels.remove(&cell);
             }
         }
+        pixels
     }
 
     // Import legacy point-only bitmaps once. Subsequent editing uses these
@@ -537,16 +522,24 @@ mod tests {
         let tip = Cell(3, 0);
         let mut v = stroke(&[Cell(1, 5), tip, Cell(5, 5)]);
         let pixels = v.pixels();
+        let curve = v.outlines().1;
         assert_eq!(pixels, seed()[&'v'].points().map(|(c, _)| c).collect());
         assert_eq!(v.points().count(), 3);
         assert_eq!(v.neighbors(tip).count(), 2);
         let cut = Cell(2, 1);
         assert_eq!(v.at(cut), EMPTY);
-        v.erase_pixel(cut);
-        let mut remaining = pixels;
+        let add = Cell(3, 1);
+        v.set_pixel_override(cut, Some(false));
+        v.set_pixel_override(add, Some(true));
+        let mut remaining = pixels.clone();
         remaining.remove(&cut);
+        remaining.insert(add);
         assert_eq!(v.pixels(), remaining);
-        assert_eq!(v.neighbors(tip).count(), 1);
+        assert_eq!(v.outlines().1, curve);
+        assert_eq!(v.neighbors(tip).count(), 2);
+        v.set_pixel_override(cut, None);
+        v.set_pixel_override(add, None);
+        assert_eq!(v.pixels(), pixels);
     }
 
     #[test]

@@ -268,6 +268,40 @@ mod tests {
     use write_fonts::read::{FontRef, TableProvider};
 
     #[test]
+    fn pixel_export_applies_overrides_and_resets() {
+        let a = Cell(1, 0);
+        let middle = Cell(2, 0);
+        let b = Cell(3, 0);
+        let extra = Cell(4, 1);
+        let mut g = Glyph::default();
+        g.set(a, font::AUTO);
+        g.set(b, font::AUTO);
+        g.set_link(Link::between(a, b), true);
+        let mut glyphs = BTreeMap::from([('x', g)]);
+        let pixels = encode(&glyphs, false).unwrap();
+        let curves = encode(&glyphs, true).unwrap();
+        let g = glyphs.get_mut(&'x').unwrap();
+        g.set_pixel_override(middle, Some(false));
+        g.set_pixel_override(extra, Some(true));
+
+        let mut expected = Glyph::default();
+        for cell in [a, b, extra] {
+            expected.set(cell, font::AUTO);
+        }
+        assert_eq!(
+            encode(&glyphs, false).unwrap(),
+            encode(&BTreeMap::from([('x', expected)]), false).unwrap()
+        );
+        assert_ne!(encode(&glyphs, false).unwrap(), pixels);
+        assert_eq!(encode(&glyphs, true).unwrap(), curves);
+
+        let g = glyphs.get_mut(&'x').unwrap();
+        g.set_pixel_override(middle, None);
+        g.set_pixel_override(extra, None);
+        assert_eq!(encode(&glyphs, false).unwrap(), pixels);
+    }
+
+    #[test]
     fn exported_font_maps_every_character_and_reflects_line_edits() {
         let mut glyphs = font::seed();
         let pixel_bytes = encode(&glyphs, false).unwrap();

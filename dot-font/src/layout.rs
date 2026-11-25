@@ -48,6 +48,7 @@ pub struct Layout {
     pub auto: Box2,
     pub erase: Box2,
     pub lines: Box2,
+    pub reset_pixels: Box2,
     pub export: Box2,
 }
 
@@ -73,6 +74,7 @@ impl Layout {
         let redo = Box2::new(grid.right() - 31, grid.y + 7, 24, 23);
         let undo = Box2::new(redo.x - 26, redo.y, 24, 23);
         let lines = Box2::new(grid.x + 8, grid.y + 7, 50, 23);
+        let reset_pixels = Box2::new(lines.x, lines.y, 77, lines.h);
         let auto = Box2::new(lines.right() + 4, grid.y + 7, 42, 23);
         let export = Box2::new(size.x - 66, size.y, 62, size.h);
         let erase = Box2::new(auto.right() + 4, auto.y, 45, 23);
@@ -98,6 +100,7 @@ impl Layout {
             auto,
             erase,
             lines,
+            reset_pixels,
             export,
         }
     }

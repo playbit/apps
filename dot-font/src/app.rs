@@ -40,7 +40,7 @@ enum Form {
 
 enum Tool {
     Paint {
-        value: u8,
+        value: Option<bool>,
         last: Option<Cell>,
     },
     Aim {
@@ -65,6 +65,36 @@ struct History {
     ch: char,
     changes: Vec<(Cell, u8, u8)>,
     lines: Vec<(Link, bool, bool)>,
+    pixels: Vec<(Cell, Option<bool>, Option<bool>)>,
+}
+
+impl History {
+    fn is_empty(&self) -> bool {
+        self.changes.is_empty() && self.lines.is_empty() && self.pixels.is_empty()
+    }
+
+    fn save(
+        &self,
+        store: &mut Store,
+        ctx: &mut Context,
+        doc: &mut Document,
+        reverse: bool,
+    ) -> bool {
+        fn values<K: Copy, V: Copy>(changes: &[(K, V, V)], reverse: bool) -> Vec<(K, V)> {
+            changes
+                .iter()
+                .map(|&(key, old, new)| (key, if reverse { old } else { new }))
+                .collect()
+        }
+        store.save(
+            ctx,
+            doc,
+            self.ch,
+            values(&self.changes, reverse),
+            values(&self.lines, reverse),
+            values(&self.pixels, reverse),
+        )
+    }
 }
 
 struct App {
@@ -77,6 +107,7 @@ struct App {
     point: Option<Cell>,
     curves: bool,
     lines: bool,
+    reset_pixels: bool,
     last_click: Option<(Cell, i32, i32, u64)>,
     sample: String,
     size: u8,
@@ -103,6 +134,7 @@ impl Default for App {
             point: None,
             curves: true,
             lines: false,
+            reset_pixels: false,
             last_click: None,
             sample: SPECIMEN.to_owned(),
             size: 11,
@@ -167,7 +199,10 @@ impl App {
                         self.form_error = "Waiting for the font to finish loading.".into();
                         return;
                     }
-                    if !self.store.save(ctx, &mut self.doc, ch, vec![], vec![]) {
+                    if !self
+                        .store
+                        .save(ctx, &mut self.doc, ch, vec![], vec![], vec![])
+                    {
                         self.form_error = self.store.error.clone();
                         return;
                     }
@@ -185,24 +220,22 @@ impl App {
         ctx: &mut Context,
         changes: Vec<(Cell, u8, u8)>,
         lines: Vec<(Link, bool, bool)>,
+        pixels: Vec<(Cell, Option<bool>, Option<bool>)>,
     ) -> bool {
-        if (changes.is_empty() && lines.is_empty()) || !self.store.loaded {
+        let edit = History {
+            ch: self.selected,
+            changes,
+            lines,
+            pixels,
+        };
+        if edit.is_empty() || !self.store.loaded {
             return false;
         }
-        let points = changes.iter().map(|&(c, _, v)| (c, v)).collect();
-        let edges = lines.iter().map(|&(e, _, v)| (e, v)).collect();
-        if self
-            .store
-            .save(ctx, &mut self.doc, self.selected, points, edges)
-        {
+        if edit.save(&mut self.store, ctx, &mut self.doc, false) {
             if self.undo.len() >= 128 {
                 self.undo.remove(0);
             }
-            self.undo.push(History {
-                ch: self.selected,
-                changes,
-                lines,
-            });
+            self.undo.push(edit);
             self.redo.clear();
             return true;
         }
@@ -223,20 +256,14 @@ impl App {
         h.lines.retain(|&(edge, old, new)| {
             self.doc.glyphs[&h.ch].links.contains(&edge) == if reverse { new } else { old }
         });
-        if h.changes.is_empty() && h.lines.is_empty() {
+        h.pixels.retain(|&(c, old, new)| {
+            self.doc.glyphs[&h.ch].pixel_overrides.get(&c).copied()
+                == if reverse { new } else { old }
+        });
+        if h.is_empty() {
             return;
         }
-        let values = h
-            .changes
-            .iter()
-            .map(|&(c, old, new)| (c, if reverse { old } else { new }))
-            .collect();
-        let edges = h
-            .lines
-            .iter()
-            .map(|&(e, old, new)| (e, if reverse { old } else { new }))
-            .collect();
-        if !self.store.save(ctx, &mut self.doc, h.ch, values, edges) {
+        if !h.save(&mut self.store, ctx, &mut self.doc, reverse) {
             source.push(h);
             return;
         }
@@ -252,7 +279,7 @@ impl App {
         if let Some(c) = self.point {
             let old = self.doc.glyphs[&self.selected].at(c);
             if old != v && old != EMPTY {
-                self.change(ctx, vec![(c, old, v)], vec![]);
+                self.change(ctx, vec![(c, old, v)], vec![], vec![]);
             }
         }
     }
@@ -274,13 +301,14 @@ impl App {
             .symmetric_difference(&draft.links)
             .map(|&e| (e, original.links.contains(&e), draft.links.contains(&e)))
             .collect();
-        if self.change(ctx, vec![(c, old, EMPTY)], lines) {
+        if self.change(ctx, vec![(c, old, EMPTY)], lines, vec![]) {
             self.point = next;
         }
     }
 
     fn toggle_mode(&mut self) {
         self.curves = !self.curves;
+        self.reset_pixels = false;
         self.point = None;
         self.gesture = None;
         self.last_click = None;
@@ -294,6 +322,10 @@ impl App {
             self.lines = !self.lines;
             self.point = None;
             self.last_click = None;
+            return;
+        }
+        if !self.curves && l.reset_pixels.contains(x, y) {
+            self.reset_pixels = !self.reset_pixels;
             return;
         }
         if l.mode.contains(x, y) {
@@ -387,16 +419,8 @@ impl App {
             }
             Tool::Aim { cell }
         } else {
-            let value = if draft.pixels().contains(&cell) {
-                EMPTY
-            } else {
-                AUTO
-            };
-            if value == EMPTY {
-                draft.erase_pixel(cell);
-            } else {
-                draft.set(cell, value);
-            }
+            let value = (!self.reset_pixels).then(|| !draft.pixels().contains(&cell));
+            draft.set_pixel_override(cell, value);
             Tool::Paint {
                 value,
                 last: Some(cell),
@@ -427,25 +451,13 @@ impl App {
                     let dx = c.0 - from.0;
                     let dy = c.1 - from.1;
                     let n = dx.abs().max(dy.abs()).max(1);
-                    let mut previous = from;
                     for i in 1..=n {
                         let t = f32::from(i) / f32::from(n);
                         let p = Cell(
                             from.0 + (dx as f32 * t).round() as i8,
                             from.1 + (dy as f32 * t).round() as i8,
                         );
-                        // Painting over ink preserves its existing direction.
-                        if *value == EMPTY {
-                            g.draft.erase_pixel(p);
-                        } else {
-                            if g.draft.at(p) == EMPTY {
-                                g.draft.set(p, *value);
-                            }
-                            if previous != p {
-                                g.draft.set_link(Link::between(previous, p), true);
-                            }
-                        }
-                        previous = p;
+                        g.draft.set_pixel_override(p, *value);
                     }
                 }
                 *last = dest;
@@ -515,11 +527,18 @@ impl App {
                     }
                 }
                 let mut changes = Vec::new();
+                let mut pixels = Vec::new();
+                let current = &self.doc.glyphs[&self.selected];
                 for y in font::BOTTOM..=font::TOP {
                     for x in 0..font::WIDTH {
                         let c = Cell(x, y);
                         if g.original.at(c) != g.draft.at(c) {
-                            changes.push((c, self.doc.glyphs[&self.selected].at(c), g.draft.at(c)));
+                            changes.push((c, current.at(c), g.draft.at(c)));
+                        }
+                        let new = g.draft.pixel_overrides.get(&c).copied();
+                        let old = current.pixel_overrides.get(&c).copied();
+                        if new != g.original.pixel_overrides.get(&c).copied() && new != old {
+                            pixels.push((c, old, new));
                         }
                     }
                 }
@@ -527,15 +546,9 @@ impl App {
                     .original
                     .links
                     .symmetric_difference(&g.draft.links)
-                    .map(|&e| {
-                        (
-                            e,
-                            self.doc.glyphs[&self.selected].links.contains(&e),
-                            g.draft.links.contains(&e),
-                        )
-                    })
+                    .map(|&e| (e, current.links.contains(&e), g.draft.links.contains(&e)))
                     .collect();
-                self.change(ctx, changes, lines);
+                self.change(ctx, changes, lines, pixels);
             }
             3 => {
                 self.gesture = None;
