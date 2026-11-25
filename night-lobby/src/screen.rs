@@ -10,6 +10,24 @@ use playbit_api::ui::{
     Color, MenuItem, ThemeColor, ThemeOverride, ViewEncoder, WindowSizeConstraints,
 };
 
+const WINDOW_PADDING: u32 = 2 * 16;
+const SESSION_TITLEBAR_HEIGHT: u32 = 32;
+const CHAT_DOCK_HEIGHT: u32 = 116;
+
+fn window_size_constraints(chat_open: bool) -> WindowSizeConstraints {
+    // Playbit measures window constraints before its session titlebar and padding.
+    let min_width = (W as u32 + WINDOW_PADDING) as f32;
+    let chat_height = if chat_open { CHAT_DOCK_HEIGHT } else { 0 };
+    let min_height = (H as u32 + WINDOW_PADDING + SESSION_TITLEBAR_HEIGHT + chat_height) as f32;
+    WindowSizeConstraints {
+        min_width,
+        min_height,
+        // Round toward a taller window so AppKit can use the exact minimum width.
+        aspect_ratio: (min_width / min_height).next_down(),
+        ..Default::default()
+    }
+}
+
 pub fn theme(view: &mut ViewEncoder, app: &App) {
     use ThemeColor::*;
     let colors = [
@@ -30,15 +48,7 @@ pub fn theme(view: &mut ViewEncoder, app: &App) {
         color: Color(c << 8 | 255),
     });
     view.theme(&colors);
-    view.window_size_constraints(WindowSizeConstraints {
-        min_width: W as f32 + 32., // Playbit adds a 16-point margin on either side.
-        aspect_ratio: if app.chat_open {
-            800. / 680.
-        } else {
-            W as f32 / H as f32
-        },
-        ..Default::default()
-    });
+    view.window_size_constraints(window_size_constraints(app.chat_open));
 }
 
 pub struct Layout {
@@ -61,7 +71,7 @@ impl Layout {
         // room for a scrollable transcript, the native editor, and layout gaps.
         let width = width.clamp(1, playbit_api::ui::MAX_CANVAS_EDGE);
         let height = height
-            .saturating_sub(116)
+            .saturating_sub(CHAT_DOCK_HEIGHT)
             .clamp(1, width * H as u32 / W as u32 + 1);
         Self::fit_area(width, height, density, false)
     }
@@ -389,11 +399,33 @@ mod tests {
     }
 
     #[test]
+    fn the_minimum_window_fits_the_full_scale_canvas() {
+        for chat_open in [false, true] {
+            let window = window_size_constraints(chat_open);
+            assert!(
+                f64::from(window.min_height) * f64::from(window.aspect_ratio)
+                    <= f64::from(window.min_width)
+            );
+            let width = window.min_width as u32 - WINDOW_PADDING;
+            let height = window.min_height as u32 - WINDOW_PADDING - SESSION_TITLEBAR_HEIGHT;
+            for density in [1., 2.] {
+                let layout = if chat_open {
+                    Layout::with_chat(width, height, density)
+                } else {
+                    Layout::new(width, height, density)
+                };
+                assert_eq!(layout.fit.sample, 1);
+                assert_eq!((layout.fit.width, layout.fit.height), (W as u32, H as u32));
+            }
+        }
+    }
+
+    #[test]
     fn the_chat_dock_leaves_space_for_the_transcript_and_keeps_the_board_clickable() {
         for (width, height) in [(640, 520), (768, 648), (992, 840), (1504, 1280)] {
             for density in [1., 1.25, 1.5, 2., 3.] {
                 let layout = Layout::with_chat(width, height, density);
-                assert!(layout.width <= width && layout.height + 116 <= height);
+                assert!(layout.width <= width && layout.height + CHAT_DOCK_HEIGHT <= height);
                 let f = &layout.fit;
                 let backing = |n: u32| (n as f32 * density).ceil() as u32;
                 assert_eq!(backing(f.width) % f.tex_w, 0);
